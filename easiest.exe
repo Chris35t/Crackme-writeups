@@ -1,0 +1,126 @@
+
+`
+# Easiest.exe Crackme Writeup
+
+## Overview
+The `easiest.exe` crackme is a simple PIN validation program.
+
+- **Behavior**:  
+  - Prompts: `Enter PIN:`  
+  - Prints `Correct! by NullerF` if the PIN is correct  
+  - Prints `Incrorrect :/` if the PIN is wrong
+
+- **Goal**: Reverse-engineer the binary to find the correct PIN.
+
+> 💡 Tip: This crackme uses a hardcoded PIN comparison.
+
+---
+
+## Tools Used
+
+| Tool | Purpose |
+|------|---------|
+| Radare2 (`r2`) | Static analysis and disassembly |
+| Wine | Running Windows binary on Linux |
+
+
+---
+
+## Static Analysis
+
+Open the binary in radare2:
+
+```bash
+r2 -A easiest.exe
+````
+
+List all functions:
+
+```r2
+afl
+```
+
+Identify main logic in `sym.main`.
+
+---
+
+## Disassembly Review
+
+Examine the main function:
+
+```r2
+s sym.main
+pdf
+```
+
+Key part of `sym.main`:
+
+```
+lea rax, str.Enter_PIN      ; "Enter PIN: "
+call sym.__mingw_printf
+lea rcx, [0x14000c00c]      ; "%d"
+call sym.__mingw_scanf
+cmp eax, 0x2179             ; Compare input with hardcoded PIN
+jne print_incorrect
+```
+
+**Explanation**:
+
+* `scanf` reads the PIN from the user.
+* `cmp eax, 0x2179` checks input against **hardcoded PIN**.
+* Conditional jump prints either correct or incorrect message.
+
+---
+
+## Finding the PIN
+
+From the disassembly:
+
+```
+cmp eax, 0x2179
+```
+
+* The correct PIN is in **hexadecimal**: `0x2179`.
+* Convert hex to decimal:
+
+| Hex    | Decimal |
+| ------ | ------- |
+| 0x2179 | 857     |
+
+✅ **Correct PIN:** `8569`
+
+---
+
+## Validation
+
+Run the program using Wine:
+
+```bash
+wine easiest.exe
+Enter PIN: 8569
+```
+
+Output:
+
+```
+Correct! by NullerF
+```
+
+If wrong PIN is entered:
+
+```
+Incrorrect :/
+```
+
+> 🔑 This confirms our analysis.
+
+---
+
+## Conclusion
+
+* `easiest.exe` is a **trivial crackme** with a hardcoded PIN.
+* Using radare2, we analyzed `sym.main` to extract the correct PIN.
+* Correct PIN is **8569**.
+
+
+
