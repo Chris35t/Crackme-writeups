@@ -1,0 +1,286 @@
+# Brainfuck-Compiled ELF Crackme Writeup
+
+## Challenge Summary
+
+We were given an ELF64 PIE binary named `a.out`. Initial checks showed that `.rodata` was almost empty, so the flag/key was not stored as a normal string. The binary had a huge `main()` function with repeated calls to `getchar`, `putchar`, `write`, `getpid`, and `usleep`.
+
+The important hint was:
+
+> this is Brainfuck compiled to C
+
+That changed the strategy from normal x86 reversing to recovering the original Brainfuck logic.
+
+## Initial Analysis
+
+```bash
+file a.out
+readelf -h a.out
+objdump -s -j .rodata a.out
+```
+
+`.rodata` only contained a few bytes:
+
+```text
+01000200 00
+```
+
+So there was no obvious flag string.
+
+Next, I searched for input functions:
+
+```bash
+objdump -d a.out | grep "call.*1080"
+```
+
+Output:
+
+```text
+12a9: call 1080 <getchar@plt>
+2e48: call 1080 <getchar@plt>
+4c40: call 1080 <getchar@plt>
+6cd0: call 1080 <getchar@plt>
+87e6: call 1080 <getchar@plt>
+9222: call 1080 <getchar@plt>
+b49f: call 1080 <getchar@plt>
+d532: call 1080 <getchar@plt>
+```
+
+There are exactly **8 `getchar()` calls**, so the key length is 8.
+
+## Recognizing Brainfuck Patterns
+
+The compiled code used a stack buffer as the Brainfuck tape:
+
+```asm
+lea rax,[rbp-0x7540]
+mov QWORD PTR [rbp-0x88b0],rax
+```
+
+The pointer was stored at:
+
+```text
+[rbp-0x88b0]
+```
+
+Brainfuck mapping:
+
+| Brainfuck | Assembly pattern                    |
+| --------- | ----------------------------------- |
+| `,`       | `call getchar@plt`                  |
+| `.`       | `call putchar@plt`                  |
+| `>`       | `add QWORD PTR [rbp-0x88b0],0x1`    |
+| `<`       | `sub QWORD PTR [rbp-0x88b0],0x1`    |
+| `+`       | `lea edx,[rax+0x1]` then store byte |
+| `-`       | `lea edx,[rax-0x1]` then store byte |
+
+Example:
+
+```asm
+call getchar@plt
+mov edx,eax
+mov rax,QWORD PTR [rbp-0x88b0]
+mov BYTE PTR [rax],dl
+```
+
+This is Brainfuck `,`.
+
+Another example:
+
+```asm
+movzx eax,BYTE PTR [rax]
+lea edx,[rax-0x1]
+mov BYTE PTR [rax],dl
+```
+
+This is Brainfuck `-`.
+
+## Extracting Brainfuck Instructions
+
+I wrote a simple extractor:
+
+```python
+import subprocess, re
+
+asm = subprocess.check_output(["objdump", "-d", "-M", "intel", "a.out"], text=True)
+lines = asm.splitlines()
+
+bf = []
+
+for l in lines:
+    if "call" in l and "getchar@plt" in l:
+        bf.append(",")
+    elif "call" in l and "putchar@plt" in l:
+        bf.append(".")
+    elif "add" in l and "QWORD PTR [rbp-0x88b0]" in l and ",0x1" in l:
+        bf.append(">")
+    elif "sub" in l and "QWORD PTR [rbp-0x88b0]" in l and ",0x1" in l:
+        bf.append("<")
+    elif re.search(r"lea\s+edx,\[rax\+0x1\]", l):
+        bf.append("+")
+    elif re.search(r"lea\s+edx,\[rax-0x1\]", l):
+        bf.append("-")
+
+code = "".join(bf)
+open("prog.bf", "w").write(code)
+
+print("[+] length:", len(code))
+print("[+] inputs:", code.count(","))
+print("[+] outputs:", code.count("."))
+```
+
+Result:
+
+```text
+[+] length: 2385
+[+] inputs: 8
+[+] outputs: 16
+```
+
+The program reads 8 bytes and prints 16 bytes on success.
+
+## Key Recovery
+
+The recovered Brainfuck logic compares each input character against fixed constants. The constants extracted were:
+
+```text
+98 114 117 104 32 119 116 102
+```
+
+Converting to ASCII:
+
+```text
+98  = b
+114 = r
+117 = u
+104 = h
+32  = space
+119 = w
+116 = t
+102 = f
+```
+
+So the required input is:
+
+```text
+bruh wtf
+```
+
+## Verification
+
+```bash
+echo -n "bruh wtf" | ./a.out
+```
+
+Output:
+
+```text
+you made it hero
+```
+
+## Final Answer
+
+```text
+bruh wtf
+```
+
+# Cheatsheet
+
+## Basic Binary Checks
+
+```bash
+file a.out
+checksec --file=a.out
+readelf -h a.out
+objdump -s -j .rodata a.out
+strings -a a.out
+```
+
+## Find Input Calls
+
+```bash
+objdump -d a.out | grep "getchar"
+objdump -d a.out | grep "call.*1080"
+objdump -d a.out | grep "call.*getchar"
+```
+
+## Find Output Calls
+
+```bash
+objdump -d a.out | grep "putchar"
+objdump -d a.out | grep "call.*1030"
+```
+
+## Disassemble Around Address
+
+```bash
+objdump -d -M intel --start-address=0x1260 --stop-address=0x1320 a.out
+```
+
+or in GDB:
+
+```gdb
+disas 0x1260,0x1320
+```
+
+## PIE Breakpoint Fix
+
+Because the binary is PIE, raw addresses like `0xd537` may fail.
+
+Use:
+
+```gdb
+delete breakpoints
+set disable-randomization on
+start
+info address main
+b *(main+0xc39e)
+c
+```
+
+## Brainfuck Mapping
+
+| BF  | Meaning            | Assembly clue          |
+| --- | ------------------ | ---------------------- |
+| `>` | move pointer right | `add [rbp-0x88b0],0x1` |
+| `<` | move pointer left  | `sub [rbp-0x88b0],0x1` |
+| `+` | increment cell     | `lea edx,[rax+0x1]`    |
+| `-` | decrement cell     | `lea edx,[rax-0x1]`    |
+| `,` | read char          | `getchar()`            |
+| `.` | print char         | `putchar()`            |
+
+## Quick Extractor
+
+```bash
+objdump -d -M intel a.out > dis.txt
+```
+
+```python
+import re
+
+lines = open("dis.txt").read().splitlines()
+bf = []
+
+for l in lines:
+    if "call" in l and "getchar@plt" in l:
+        bf.append(",")
+    elif "call" in l and "putchar@plt" in l:
+        bf.append(".")
+    elif "add" in l and "QWORD PTR [rbp-0x88b0]" in l and ",0x1" in l:
+        bf.append(">")
+    elif "sub" in l and "QWORD PTR [rbp-0x88b0]" in l and ",0x1" in l:
+        bf.append("<")
+    elif re.search(r"lea\s+edx,\[rax\+0x1\]", l):
+        bf.append("+")
+    elif re.search(r"lea\s+edx,\[rax-0x1\]", l):
+        bf.append("-")
+
+open("prog.bf", "w").write("".join(bf))
+print("inputs:", bf.count(","))
+print("outputs:", bf.count("."))
+```
+
+## Run Final Key
+
+```bash
+echo -n "bruh wtf" | ./a.out
+```
